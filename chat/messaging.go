@@ -2,9 +2,10 @@ package chat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"time"
 	"net"
+	"time"
 )
 
 const (
@@ -78,6 +79,10 @@ func (m *MulticastMessenger) Listen() (<-chan Message, error) {
 		for {
 			n, _, err := m.listener.ReadFromUDP(buffer)
 			if err != nil {
+				// Known error that occurs when leaving the chat.
+				if errors.Is(err, net.ErrClosed) {
+					continue
+				}
 				fmt.Printf("read error %v\n", err)
 				continue
 			}

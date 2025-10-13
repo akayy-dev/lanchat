@@ -2,13 +2,11 @@ package main
 
 import (
 	"LANChat/chat"
-	"fmt"
+	"LANChat/ui"
 	"os"
 	"os/user"
-	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/reeflective/readline"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 const (
@@ -22,31 +20,6 @@ func main() {
 	}
 	defer messenger.Close()
 
-	// Listen for and render messages
-	msgChan, _ := messenger.Listen()
-	go func() {
-		for msg := range msgChan {
-			formattedUserID := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(msg.User.Color)).Render(fmt.Sprintf("%s@%s", msg.User.Name, msg.User.Hostname))
-			if msg.Type == chat.USERJOIN {
-				fmt.Printf(
-					"%s has joined the chat\n",
-					formattedUserID,
-				)
-			}
-			if msg.Type == chat.USERLEAVE {
-				fmt.Printf(
-					"%s has left the chat\n",
-					formattedUserID,
-				)
-			}
-			if msg.Type == chat.MESSAGESEND {
-				fmt.Printf("%s - %s\n%s\n", formattedUserID, msg.Time.Format("3:04 PM"), msg.Content)
-			}
-
-			fmt.Print("> ")
-		}
-	}()
-
 	// Get username & hostname
 	systemUser, err := user.Current()
 	if err != nil {
@@ -59,40 +32,21 @@ func main() {
 
 	chatUser := chat.CreateNewUser(systemUser.Username, hostname)
 
-	messenger.Send(
-		chat.Message{
-			User: chatUser,
-			Type: chat.USERJOIN,
-		},
-	)
+	chatUI := ui.ChatWindow{
+		Messenger: messenger,
+		User:      chatUser,
+	}
 
-	rl := readline.NewShell()
-	rl.Prompt.Primary(func() string { return "> " })
-	for {
-		line, err := rl.Readline()
-		if err != nil {
-			fmt.Printf("error reading from stdin: %v", err)
-			continue
+	p := tea.NewProgram(&chatUI)
+	// Listen for and render messages
+	msgChan, _ := messenger.Listen()
+	go func() {
+		for msg := range msgChan {
+			p.Send(ui.NewMessageMsg(msg))
 		}
-		if line == "" {
-			continue
-		}
+	}()
 
-		rl.Printf("Message sent")
-		if line == "/quit" {
-			messenger.Send(chat.Message{
-				User: chatUser,
-				Type: chat.USERLEAVE,
-			})
-			break
-		}
-		messenger.Send(
-			chat.Message{
-				User:    chatUser,
-				Content: line,
-				Time:    time.Now(),
-				Type:    chat.MESSAGESEND,
-			},
-		)
+	if _, err := p.Run(); err != nil {
+		panic(err)
 	}
 }
