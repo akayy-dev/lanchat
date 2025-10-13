@@ -2,14 +2,13 @@ package main
 
 import (
 	"LANChat/chat"
-	"bufio"
 	"fmt"
 	"os"
 	"os/user"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/reeflective/readline"
 )
 
 const (
@@ -66,22 +65,21 @@ func main() {
 			Type: chat.USERJOIN,
 		},
 	)
-	// Loop to scan for input
-	inputReader := bufio.NewReader(os.Stdin)
+
+	rl := readline.NewShell()
+	rl.Prompt.Primary(func() string { return "> " })
 	for {
-		fmt.Print("> ")
-		text, err := inputReader.ReadString('\n')
-		text = strings.TrimSpace(text)
-
+		line, err := rl.Readline()
 		if err != nil {
-			fmt.Printf("Error reading input, %v", err)
+			fmt.Printf("error reading from stdin: %v", err)
+			continue
 		}
-
-		if text == "" {
+		if line == "" {
 			continue
 		}
 
-		if text == "/quit" {
+		rl.Printf("Message sent")
+		if line == "/quit" {
 			messenger.Send(chat.Message{
 				User: chatUser,
 				Type: chat.USERLEAVE,
@@ -91,7 +89,7 @@ func main() {
 		messenger.Send(
 			chat.Message{
 				User:    chatUser,
-				Content: text,
+				Content: line,
 				Time:    time.Now(),
 				Type:    chat.MESSAGESEND,
 			},
