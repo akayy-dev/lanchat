@@ -8,6 +8,8 @@ import (
 	"os/user"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -25,21 +27,24 @@ func main() {
 	msgChan, _ := messenger.Listen()
 	go func() {
 		for msg := range msgChan {
+			formattedUserID := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(msg.User.Color)).Render(fmt.Sprintf("%s@%s", msg.User.Name, msg.User.Hostname))
 			if msg.Type == chat.USERJOIN {
 				fmt.Printf(
-					"%s@%s has joined the chat\n",
-					msg.User.Name, msg.User.Hostname,
+					"%s has joined the chat\n",
+					formattedUserID,
 				)
 			}
 			if msg.Type == chat.USERLEAVE {
 				fmt.Printf(
-					"%s@%s has left the chat\n",
-					msg.User.Name, msg.User.Hostname,
+					"%s has left the chat\n",
+					formattedUserID,
 				)
 			}
 			if msg.Type == chat.MESSAGESEND {
-				fmt.Printf("%s@%s - %s\n%s", msg.User.Hostname, msg.User.Hostname, msg.Time.Format("3:04 PM"), msg.Content)
+				fmt.Printf("%s - %s\n%s\n", formattedUserID, msg.Time.Format("3:04 PM"), msg.Content)
 			}
+
+			fmt.Print("> ")
 		}
 	}()
 
@@ -53,10 +58,7 @@ func main() {
 		panic(err)
 	}
 
-	chatUser := chat.User{
-		Name:     systemUser.Username,
-		Hostname: hostname,
-	}
+	chatUser := chat.CreateNewUser(systemUser.Username, hostname)
 
 	messenger.Send(
 		chat.Message{

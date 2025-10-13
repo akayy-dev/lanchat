@@ -1,9 +1,8 @@
 package chat
 
 import (
-	"encoding/json"
 	"fmt"
-	"net"
+	"math/rand"
 	"time"
 )
 
@@ -15,41 +14,24 @@ const (
 	USERLEAVE
 )
 
-
 type User struct {
 	Name     string `json:"username"`
 	Hostname string `json:"hostname"`
+	Color    string `json:"color"`
 }
 
-type Message struct {
-	Content string      `json:"message"`
-	Type    MessageType `json:"type"`
-	Time    time.Time   `json:"time"`
-	User    User        `json:"user"`
+func randomHexString() string {
+	rand.Seed(time.Now().UnixNano()) // Seed with current time
+	r := rand.Intn(256)              // Red: 0–255
+	g := rand.Intn(256)              // Green: 0–255
+	b := rand.Intn(256)              // Blue: 0–255
+	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
 }
 
-func SendMessage(msg Message) {
-	addr, err := net.ResolveUDPAddr("udp4", MULTICAST_ADDR)
-	if err != nil {
-		panic(err)
+func CreateNewUser(username string, hostname string) User {
+	return User{
+		Name:     username,
+		Hostname: hostname,
+		Color:    randomHexString(),
 	}
-
-	conn, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		fmt.Printf("Connection error: %v\n", err)
-		return
-	}
-	defer conn.Close()
-
-	payload, err := json.Marshal(msg)
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = conn.Write(payload)
-
-	if err != nil {
-		fmt.Printf("Send error: %v\n", err)
-	}
-
 }

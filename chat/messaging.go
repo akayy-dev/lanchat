@@ -3,12 +3,20 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 	"net"
 )
 
 const (
 	MULTICAST_ADDR = "224.0.0.1:9999"
 )
+
+type Message struct {
+	Content string      `json:"message"`
+	Type    MessageType `json:"type"`
+	Time    time.Time   `json:"time"`
+	User    User        `json:"user"`
+}
 
 type MessageService interface {
 	Send(msg Message) error
