@@ -115,6 +115,10 @@ func (c *ChatWindow) View() string {
 				),
 			)
 		}
+
+		if msg.Type == chat.CLIENT {
+			c.sb.WriteString(msg.Content + "\n")
+		}
 	}
 	c.sb.WriteString(c.textfield.View())
 	return c.sb.String()

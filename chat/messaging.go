@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -17,6 +19,8 @@ type Message struct {
 	Type    MessageType `json:"type"`
 	Time    time.Time   `json:"time"`
 	User    User        `json:"user"`
+	// Whether or not the message came from the client itself.
+	Circular bool
 }
 
 type MessageService interface {
@@ -26,10 +30,12 @@ type MessageService interface {
 }
 
 type MulticastMessenger struct {
-	conn     *net.UDPConn
-	addr     *net.UDPAddr
-	iface    *net.Interface
-	listener *net.UDPConn
+	conn        *net.UDPConn
+	addr        *net.UDPAddr
+	iface       *net.Interface
+	listener    *net.UDPConn
+	messageChan chan Message
+	UserUUID    uuid.UUID
 }
 
 // Create a MulticastMesseneger
@@ -66,15 +72,27 @@ func (m *MulticastMessenger) Send(msg Message) error {
 		return fmt.Errorf("error marshalling JSON message %w", err)
 	}
 
-	_, err = m.conn.Write(payload)
+	// Don't send messages meant for the client to the network.
+	if msg.Type != CLIENT {
+		_, err = m.conn.Write(payload)
+	} else {
+		if m.messageChan != nil {
+			select {
+			case m.messageChan <- msg:
+			default:
+			}
+		}
+	}
 	return err
 }
 
 func (m *MulticastMessenger) Listen() (<-chan Message, error) {
-	ch := make(chan Message)
+	if m.messageChan == nil {
+		m.messageChan = make(chan Message, 32)
+	}
 
 	go func() {
-		defer close(ch)
+		defer close(m.messageChan)
 		buffer := make([]byte, 2048)
 		for {
 			n, _, err := m.listener.ReadFromUDP(buffer)
@@ -92,11 +110,14 @@ func (m *MulticastMessenger) Listen() (<-chan Message, error) {
 				fmt.Printf("json unmarshal error %v\n", err)
 				continue
 			}
-			ch <- msg
+			if msg.User.UUID == m.UserUUID {
+				msg.Circular = true
+			}
+			m.messageChan <- msg
 		}
 	}()
 
-	return ch, nil
+	return m.messageChan, nil
 }
 
 func (m *MulticastMessenger) Close() error {
