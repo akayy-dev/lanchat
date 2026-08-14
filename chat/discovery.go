@@ -6,102 +6,139 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"strconv"
+	"sync"
 
 	"github.com/schollz/peerdiscovery"
 )
 
 type Peer struct {
 	PeerID string `json:"peer_id"`
-	Addr   string `json:"addr"`
+	// Addr is derived locally from the multicast packet's source address. It is
+	// intentionally not broadcast because a host can have multiple interfaces.
+	Addr string `json:"-"`
+	// Port is the TCP port on which this peer accepts unicast connections.
+	Port int `json:"port"`
 }
 
-// Get the IP address recipients are supposed to communicate with over unicast
-func getOutboundIP() (net.IP, error) {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP, nil
-}
-
-
-func buildAnnouncement(peerID string) (Peer, net.Listener, error) {
-	// TODO: Find out how listener shold be used in the return value
+func createPeer(peerID string) (Peer, net.Listener, error) {
+	// Binding to :0 reserves an available TCP port before we announce it.
 	listener, err := net.Listen("tcp", ":0")
 	if err != nil {
 		return Peer{}, nil, err
 	}
 
-	ip, err := getOutboundIP()
-	if err != nil {
-		listener.Close()
-		return Peer{}, nil, err
-	}
-
 	port := listener.Addr().(*net.TCPAddr).Port
-	addr := fmt.Sprintf("%s:%d", ip.String(), port)
-
-	return Peer{PeerID: peerID, Addr: addr}, listener, nil
+	return Peer{PeerID: peerID, Port: port}, listener, nil
 }
 
 type MultiCastDiscovery struct {
-	discovery *peerdiscovery.PeerDiscovery
+	mu       sync.Mutex
+	stopChan chan struct{}
+	stopOnce sync.Once
 }
 
-func (m *MultiCastDiscovery) Listen() ( <-chan Peer, error ) {
+// Listen starts multicast discovery and immediately returns the discovered-peer
+// stream, asynchronous error stream, and the TCP listener advertised to peers.
+// The caller owns tcpListener and must close it when shutting down.
+func (m *MultiCastDiscovery) Listen() (<-chan Peer, <-chan error, net.Listener, error) {
 	user, err := user.Current()
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	peerID := user.Username + "@" + hostname
-	announcement, _, err := buildAnnouncement(peerID)
+	announcement, tcpListener, err := createPeer(peerID)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	payload, err := json.Marshal(announcement)
 	if err != nil {
-		return nil, err
+		tcpListener.Close()
+		return nil, nil, nil, err
 	}
 
+	// Check if discovery has already been started.
+	m.mu.Lock()
+	if m.stopChan != nil {
+		m.mu.Unlock()
+		tcpListener.Close()
+		return nil, nil, nil, fmt.Errorf("multicast discovery has already been started")
+	}
+
+	// peerdiscovery checks StopChan between discovery iterations. Storing it
+	// before the goroutine starts makes Close safe immediately after Listen.
+	m.stopChan = make(chan struct{})
+	stopChan := m.stopChan
+	m.mu.Unlock()
+
 	peerChan := make(chan Peer, 16)
+	errChan := make(chan error, 1)
 	discoverySettings := peerdiscovery.Settings{
 		Payload:   payload,
 		Limit:     -1,
 		AllowSelf: false,
 		TimeLimit: -1,
+		StopChan:  stopChan,
 		Notify: func(d peerdiscovery.Discovered) {
 			var p Peer
 			if err := json.Unmarshal(d.Payload, &p); err != nil {
 				return // skip invalid packets
 			}
-			peerChan <- p
+			if p.Port < 1 || p.Port > 65535 {
+				return // skip announcements without a usable TCP port
+			}
+
+			// d.Address is the sender IP as observed on this LAN, which is more
+			// reliable than an IP selected by the sender for another destination.
+			p.Addr = net.JoinHostPort(d.Address, strconv.Itoa(p.Port))
+
+			// Do not leave the discovery callback blocked during shutdown if the
+			// consumer has stopped reading discovered peers.
+			select {
+			case peerChan <- p:
+			case <-stopChan:
+			}
 		},
 	}
 	go func() {
-		m.discovery, err = peerdiscovery.NewPeerDiscovery(discoverySettings)
+		defer close(peerChan)
+		defer close(errChan)
+		defer func() {
+			// Some network setup failures in third-party discovery implementations
+			// can surface as panics; expose them through the error stream instead.
+			if recovered := recover(); recovered != nil {
+				errChan <- fmt.Errorf("multicast discovery failed: %v", recovered)
+			}
+		}()
+
+		_, err = peerdiscovery.NewPeerDiscovery(discoverySettings)
 		if err != nil {
-			panic(err)
+			// Errors occur after Listen has returned, so report them rather than
+			// panicking in a background goroutine.
+			errChan <- err
 		}
 	}()
 
-	return peerChan, err
+	return peerChan, errChan, tcpListener, nil
 }
 
+// Close asks the blocking peerdiscovery loop to exit. It does not close the
+// TCP listener returned by Listen because that listener is owned by the caller.
 func (m *MultiCastDiscovery) Close() error {
-	if (m.discovery == nil) {
-		return fmt.Errorf("m.discovery is nil")
-	} else {
-		// I think this closes the listener, idk?
-		m.discovery.Shutdown()
-		return nil
+	m.mu.Lock()
+	stopChan := m.stopChan
+	m.mu.Unlock()
+
+	if stopChan == nil {
+		return fmt.Errorf("multicast discovery has not been started")
 	}
+
+	m.stopOnce.Do(func() { close(stopChan) })
+	return nil
 }
