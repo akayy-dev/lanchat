@@ -1,51 +1,118 @@
 package ui
 
 import (
+	"strings"
+
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-type ChatWindowModel struct {
-	Users    []User
-	Messages []ChatMessage
+func NewChatWindowModel() ChatWindowModel {
+	input := textinput.New()
+	input.Placeholder = "Type a message..."
+	input.Focus()
+	model := ChatWindowModel{
+		Users:     make(map[string]User),
+		Messages:  make([]ChatMessage, 0),
+		textinput: input,
+	}
+	return model
 }
 
+type ChatWindowModel struct {
+	Users     map[string]User
+	Messages  []ChatMessage
+	textinput textinput.Model
+}
+
+type InitMsg struct{}
+
 func (c ChatWindowModel) Init() tea.Cmd {
-	return tea.ClearScreen
+	initCmd := func() tea.Msg {
+		return InitMsg{}
+	}
+	return tea.Batch(initCmd, textinput.Blink, tea.WindowSize())
 }
 
 func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case InitMsg:
+		// Handle any init logic here.
+		return c, nil
+	case tea.WindowSizeMsg:
+		c.textinput.Width = msg.Width
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			return c, tea.Quit
+		case "enter":
+			input := strings.TrimSpace(c.textinput.Value())
+			if input == "/quit" {
+				return c, tea.Quit
+			}
+
+			if input != "" {
+				c.Messages = append(c.Messages, ChatMessage{
+					Type:    USER_MESSAGE,
+					From:    "You",
+					Content: c.textinput.Value(),
+				})
+				c.textinput.SetValue("")
+			}
+			return c, nil
 		}
 	case NewUserMsg:
 		user := User{
 			Name:  msg.Peer.PeerID,
 			Color: generateRandomHexString(),
 		}
-		c.Users = append(c.Users, user)
-		//
+		c.Users[msg.Peer.PeerID] = user
+
 		// Format the user name with their color using lipgloss
-		formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(user.Color)).Render(user.Name)
 		joinMsg := ChatMessage{
-			Type:    SYSTEM_MESSAGE,
-			Content: formattedName + " joined the chat",
+			Type: USER_JOIN,
+			From: user.Name,
 		}
 		c.Messages = append(c.Messages, joinMsg)
+	case LeftUserMsg:
+		leftMsg := ChatMessage{
+			Type: USER_LEFT,
+			From: msg.Peer.PeerID,
+		}
+		c.Messages = append(c.Messages, leftMsg)
+		delete(c.Users, msg.Peer.PeerID)
+	case MessageUpdate:
+		c.Messages = append(c.Messages, ChatMessage{
+			Type:    msg.Type,
+			Content: msg.Content,
+			From:    msg.From,
+		})
 	}
-	return c, nil
+	c.textinput, cmd = c.textinput.Update(msg)
+	return c, cmd
 }
 
 func (c ChatWindowModel) View() string {
-	var output string
+	var sb strings.Builder
 	if len(c.Messages) == 0 {
-		output = "Waiting for peers to join...\n"
+		sb.WriteString("Waiting for peers to join...\n")
 	}
 	for _, msg := range c.Messages {
-		output += msg.Content + "\n"
+		switch msg.Type {
+		case USER_JOIN:
+			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
+			sb.WriteString(formattedName + " joined the chat\n")
+		case USER_LEFT:
+			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
+			sb.WriteString(formattedName + " left the chat\n")
+		case USER_MESSAGE:
+			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
+			sb.WriteString(formattedName + ": " + msg.Content + "\n")
+		}
 	}
-	return output
+	sb.WriteString("\n")
+	sb.WriteString(c.textinput.View())
+	return sb.String()
 }

@@ -8,8 +8,13 @@ import (
 	"os/user"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/schollz/peerdiscovery"
+)
+
+const (
+	LastSeenTimeout = 10 * time.Second
 )
 
 type Peer struct {
@@ -36,31 +41,40 @@ type MultiCastDiscovery struct {
 	mu       sync.Mutex
 	stopChan chan struct{}
 	stopOnce sync.Once
+	// LastSeen tracks the last time we saw each peer, if a peer hasn't been seen
+	// in a while, we can assume they're offline.
+	LastSeen map[string]time.Time
+}
+
+func NewMultiCastDiscovery() *MultiCastDiscovery {
+	return &MultiCastDiscovery{
+		LastSeen: make(map[string]time.Time),
+	}
 }
 
 // Listen starts multicast discovery and immediately returns the discovered-peer
 // stream, asynchronous error stream, and the TCP listener advertised to peers.
 // The caller owns tcpListener and must close it when shutting down.
-func (m *MultiCastDiscovery) Listen() (<-chan Peer, <-chan error, net.Listener, error) {
+func (m *MultiCastDiscovery) Listen() (<-chan Peer, <-chan Peer, <-chan error, net.Listener, error) {
 	user, err := user.Current()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	peerID := user.Username + "@" + hostname
 	announcement, tcpListener, err := createPeer(peerID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	payload, err := json.Marshal(announcement)
 	if err != nil {
 		tcpListener.Close()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// Check if discovery has already been started.
@@ -68,7 +82,7 @@ func (m *MultiCastDiscovery) Listen() (<-chan Peer, <-chan error, net.Listener, 
 	if m.stopChan != nil {
 		m.mu.Unlock()
 		tcpListener.Close()
-		return nil, nil, nil, fmt.Errorf("multicast discovery has already been started")
+		return nil, nil, nil, nil, fmt.Errorf("multicast discovery has already been started")
 	}
 
 	// peerdiscovery checks StopChan between discovery iterations. Storing it
@@ -77,7 +91,8 @@ func (m *MultiCastDiscovery) Listen() (<-chan Peer, <-chan error, net.Listener, 
 	stopChan := m.stopChan
 	m.mu.Unlock()
 
-	peerChan := make(chan Peer, 16)
+	discoveredPeerChan := make(chan Peer, 16)
+	lostPeerChan := make(chan Peer, 16)
 	errChan := make(chan error, 1)
 	discoverySettings := peerdiscovery.Settings{
 		Payload:   payload,
@@ -101,13 +116,29 @@ func (m *MultiCastDiscovery) Listen() (<-chan Peer, <-chan error, net.Listener, 
 			// Do not leave the discovery callback blocked during shutdown if the
 			// consumer has stopped reading discovered peers.
 			select {
-			case peerChan <- p:
+			case discoveredPeerChan <- p:
+			case <-stopChan:
+			}
+		},
+		/* TODO: This logic does not actually work, replace with SWIM protocol or something else
+		for lost user detection
+		*/
+		NotifyLost: func(l peerdiscovery.LostPeer) {
+			var p Peer
+			if err := json.Unmarshal(l.LastPayload, &p); err != nil {
+				return // skip invalid packets
+			}
+			p.Addr = net.JoinHostPort(l.Address, strconv.Itoa(p.Port))
+			// Do not leave the discovery callback blocked during shutdown if the
+			// consumer has stopped reading lost peers.
+			select {
+			case lostPeerChan <- p:
 			case <-stopChan:
 			}
 		},
 	}
 	go func() {
-		defer close(peerChan)
+		defer close(discoveredPeerChan)
 		defer close(errChan)
 		defer func() {
 			// Some network setup failures in third-party discovery implementations
@@ -125,7 +156,7 @@ func (m *MultiCastDiscovery) Listen() (<-chan Peer, <-chan error, net.Listener, 
 		}
 	}()
 
-	return peerChan, errChan, tcpListener, nil
+	return discoveredPeerChan, lostPeerChan, errChan, tcpListener, nil
 }
 
 // Close asks the blocking peerdiscovery loop to exit. It does not close the

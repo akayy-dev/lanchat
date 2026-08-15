@@ -9,6 +9,8 @@ type ChatMessageType int
 const (
 	SYSTEM_MESSAGE ChatMessageType = iota
 	USER_MESSAGE
+	USER_JOIN
+	USER_LEFT
 )
 
 type ChatMessage struct {
@@ -18,6 +20,10 @@ type ChatMessage struct {
 }
 
 type NewUserMsg struct {
+	Peer chat.Peer
+}
+
+type LeftUserMsg struct {
 	Peer chat.Peer
 }
 

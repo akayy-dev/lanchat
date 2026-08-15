@@ -10,8 +10,8 @@ import (
 
 func main() {
 	peers := make(map[string]string)
-	multicast := chat.MultiCastDiscovery{}
-	peerChan, errChan, tcpListener, err := multicast.Listen()
+	multicast := chat.NewMultiCastDiscovery()
+	discoveredPeerChan, lostPeerChan, errChan, tcpListener, err := multicast.Listen()
 	if err != nil {
 		panic(err)
 	}
@@ -23,15 +23,15 @@ func main() {
 		fmt.Printf("Message received - %s\n", message)
 	})
 
-	model := ui.ChatWindowModel{}
+	model := ui.NewChatWindowModel()
 	p := tea.NewProgram(model)
 
 	go func() {
-		for peerChan != nil || errChan != nil {
+		for discoveredPeerChan != nil || lostPeerChan != nil || errChan != nil {
 			select {
-			case peer, ok := <-peerChan:
+			case peer, ok := <-discoveredPeerChan:
 				if !ok {
-					peerChan = nil
+					discoveredPeerChan = nil
 					continue
 				}
 				if _, ok := peers[peer.PeerID]; !ok {
@@ -39,6 +39,13 @@ func main() {
 					peers[peer.PeerID] = peer.Addr
 					p.Send(ui.NewUserMsg{Peer: peer})
 				}
+			case peer, ok := <-lostPeerChan:
+				if !ok {
+					lostPeerChan = nil
+					continue
+				}
+				delete(peers, peer.PeerID)
+				p.Send(ui.LeftUserMsg{Peer: peer})
 			case err, ok := <-errChan:
 				if !ok {
 					errChan = nil
