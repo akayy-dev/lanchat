@@ -2,7 +2,10 @@ package main
 
 import (
 	"LANChat/chat"
+	"LANChat/ui"
 	"fmt"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
@@ -20,23 +23,32 @@ func main() {
 		fmt.Printf("Message received - %s\n", message)
 	})
 
-	for peerChan != nil || errChan != nil {
-		select {
-		case peer, ok := <-peerChan:
-			if !ok {
-				peerChan = nil
-				continue
+	model := ui.ChatWindowModel{}
+	p := tea.NewProgram(model)
+
+	go func() {
+		for peerChan != nil || errChan != nil {
+			select {
+			case peer, ok := <-peerChan:
+				if !ok {
+					peerChan = nil
+					continue
+				}
+				if _, ok := peers[peer.PeerID]; !ok {
+					// fmt.Printf("Peer discovered - %s:%s\n", peer.PeerID, peer.Addr)
+					peers[peer.PeerID] = peer.Addr
+					p.Send(ui.NewUserMsg{Peer: peer})
+				}
+			case err, ok := <-errChan:
+				if !ok {
+					errChan = nil
+					continue
+				}
+				panic(err)
 			}
-			if _, ok := peers[peer.PeerID]; !ok {
-				fmt.Printf("Peer discovered - %s:%s\n", peer.PeerID, peer.Addr)
-				peers[peer.PeerID] = peer.Addr
-			}
-		case err, ok := <-errChan:
-			if !ok {
-				errChan = nil
-				continue
-			}
-			panic(err)
 		}
+	}()
+	if _, err := p.Run(); err != nil {
+		panic(err)
 	}
 }

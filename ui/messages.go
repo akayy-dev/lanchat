@@ -1,11 +1,38 @@
 package ui
 
-type ChatMessage int
+import (
+	"LANChat/chat"
+)
+
+type ChatMessageType int
+
 const (
-	SYSTEM_MESSAGE ChatMessage = iota
+	SYSTEM_MESSAGE ChatMessageType = iota
 	USER_MESSAGE
 )
 
-type Message struct {
-	Type ChatMessage
+type ChatMessage struct {
+	Type    ChatMessageType
+	Content string
+	From    string
+}
+
+type NewUserMsg struct {
+	Peer chat.Peer
+}
+
+func NewMessageUpdate(msgType ChatMessageType, content string, from string) func() MessageUpdate {
+	return func() MessageUpdate {
+		return MessageUpdate{
+			Type:    msgType,
+			Content: content,
+			From:    from,
+		}
+	}
+}
+
+type MessageUpdate struct {
+	Type    ChatMessageType
+	Content string
+	From    string
 }
