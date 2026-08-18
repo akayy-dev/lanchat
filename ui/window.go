@@ -35,6 +35,15 @@ func (c ChatWindowModel) Init() tea.Cmd {
 	return tea.Batch(initCmd, textinput.Blink, tea.WindowSize())
 }
 
+// Writes a SYSTEM_MESSAGE to the screen as if it was a chat message, useful for logging as it implementst he io.Writer interface.
+func (c ChatWindowModel) Write(b []byte) (int, error) {
+	c.Messages = append(c.Messages, ChatMessage{
+		Type:    SYSTEM_MESSAGE,
+		Content: string(b),
+	})
+	return len(b), nil
+}
+
 func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
@@ -110,9 +119,12 @@ func (c ChatWindowModel) View() string {
 		case USER_MESSAGE:
 			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
 			sb.WriteString(formattedName + ": " + msg.Content + "\n")
+
+		case SYSTEM_MESSAGE:
+			formattedContent := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(8)).Render(msg.Content)
+			sb.WriteString(formattedContent + "\n")
 		}
 	}
-	sb.WriteString("\n")
 	sb.WriteString(c.textinput.View())
 	return sb.String()
 }
