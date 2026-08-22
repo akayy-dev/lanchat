@@ -18,10 +18,10 @@ LANChat uses a two-stage networking approach:
 
 2. **Messaging (TCP)**: Once peers are discovered, messages are sent directly between users using TCP connections for reliable delivery.
 
-## Requirements
-
-- Go 1.25.0 or higher
-- Local network with multicast support
+## An important note:
+Many public networks have security measures in place to block devices from
+communicating with each other, as such behavior in public spaces such as a
+libraries or airports may be unpredictable
 
 ## Installation
 
