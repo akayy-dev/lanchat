@@ -30,6 +30,7 @@ func main() {
 	chatService := chat.NewChatService(multicast.PeerID)
 	chatService.Start(tcpListener)
 	defer tcpListener.Close()
+	defer chatService.Close()
 	defer multicast.Close()
 
 	go func() {
@@ -42,7 +43,7 @@ func main() {
 				}
 				if _, ok := peers[peer.PeerID]; !ok {
 					peers[peer.PeerID] = peer.Addr
-					chatService.OnNewPeer(peer)
+					chatService.HandleNewPeer(peer)
 					p.Send(ui.NewUserMsg{Peer: peer})
 				}
 			case err, ok := <-errChan:
