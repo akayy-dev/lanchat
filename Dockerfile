@@ -1,17 +1,8 @@
-FROM golang:1.24.2-alpine
+FROM golang
 
-WORKDIR /app
-
-# Copy your Go module files (if any)
-COPY go.mod go.sum* ./
-RUN go mod download
-
-# Copy the rest of the source
+WORKDIR /lanchat
 COPY . .
+RUN go mod tidy
+RUN go build ./cmd/lanchat
 
-# Build the chat app
-RUN go build -o lanchat .
-
-# Start interactively
-ENTRYPOINT ["./lanchat"]
-
+CMD ["/lanchat/lanchat"]
