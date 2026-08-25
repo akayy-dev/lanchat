@@ -31,9 +31,12 @@ type TCPMessage struct {
 
 func NewChatService(localPeerID string) *ChatService {
 	return &ChatService{
-		LocalPeerID: localPeerID,
-		connections: make(map[string]net.Conn),
-		peers:       make(map[string]Peer),
+		LocalPeerID:         localPeerID,
+		connections:         make(map[string]net.Conn),
+		peers:               make(map[string]Peer),
+		SendMessageChan:     make(chan string, 20),     // Buffered channel for sending messages
+		ReceivedMessageChan: make(chan TCPMessage, 20), // Buffered channel for receiving messages
+		ErrorChan:           make(chan error, 20),      // Buffered channel for errorss
 	}
 }
 
@@ -43,6 +46,11 @@ type ChatService struct {
 	listener    net.Listener
 	peers       map[string]Peer
 	mu          sync.RWMutex
+
+	// Channels for sending and receiving updates
+	SendMessageChan     chan string     // UI will send messages to this channel to broadcast to all peers
+	ReceivedMessageChan chan TCPMessage // Received messages from peers will be sent to this channel for the UI to display
+	ErrorChan           chan error      // Errors encountered during networking operations will be sent to this channel for logging or UI display
 }
 
 // dialPeer attempts to establish a TCP connection to the given peer.
@@ -55,6 +63,18 @@ func (c *ChatService) Start(listener net.Listener) {
 	c.listener = listener
 	c.mu.Unlock()
 	go c.acceptLoop()
+	go c.sendMessageLoop()
+}
+
+// Goroutine to continuously read messages from the SendMessageChan and broadcast them to all connected peers.
+func (c *ChatService) sendMessageLoop() {
+	for content := range c.SendMessageChan {
+		err := c.Broadcast(content)
+		if err != nil {
+			slog.Error("Failed to broadcast message", slog.Any("err", err))
+			c.ErrorChan <- err
+		}
+	}
 }
 
 // Close gracefully shuts down the ChatService, closing all active connections and the listener.
@@ -168,6 +188,13 @@ func (c *ChatService) readLoop(peerID string, conn net.Conn) {
 		if err != nil {
 			return
 		}
+
+		// Forward chat messages to the channel for UI to render
+		if message.Type == CHAT_MESSAGE {
+			if c.ReceivedMessageChan != nil {
+				c.ReceivedMessageChan <- message
+			}
+		}
 		slog.Info(
 			"received message",
 			"from", message.From,
@@ -256,7 +283,8 @@ func (c *ChatService) Broadcast(content string) error {
 	return nil
 }
 
-func (c *ChatService) HandleNewPeer(peer Peer) error {
+// RegisterPeer registers a new peer and establishes a connection if the local peer ID is lower than the remote peer ID.
+func (c *ChatService) RegisterPeer(peer Peer) error {
 	if c.LocalPeerID == peer.PeerID {
 		// Ignore self
 		return nil

@@ -13,17 +13,19 @@ func NewChatWindowModel() ChatWindowModel {
 	input.Placeholder = "Type a message..."
 	input.Focus()
 	model := ChatWindowModel{
-		Users:     make(map[string]User),
-		Messages:  make([]ChatMessage, 0),
-		textinput: input,
+		Users:           make(map[string]User),
+		Messages:        make([]ChatMessage, 0),
+		SentMessageChan: make(chan ChatMessage, 1),
+		textinput:       input,
 	}
 	return model
 }
 
 type ChatWindowModel struct {
-	Users     map[string]User
-	Messages  []ChatMessage
-	textinput textinput.Model
+	Users           map[string]User
+	Messages        []ChatMessage
+	SentMessageChan chan ChatMessage
+	textinput       textinput.Model
 }
 
 type InitMsg struct{}
@@ -52,6 +54,12 @@ func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return c, nil
 	case tea.WindowSizeMsg:
 		c.textinput.Width = msg.Width
+	case ReceivedChatMessage:
+		c.Messages = append(c.Messages, ChatMessage{
+			Type:    USER_MESSAGE,
+			Content: string(msg.Message.Content),
+			From:    msg.Message.From,
+		})
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
@@ -63,12 +71,15 @@ func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if input != "" {
-				c.Messages = append(c.Messages, ChatMessage{
+				message := ChatMessage{
 					Type:    USER_MESSAGE,
 					From:    "You",
 					Content: c.textinput.Value(),
-				})
+				}
+				c.Messages = append(c.Messages, message)
 				c.textinput.SetValue("")
+				// Send the message to the SentMessageChan for broadcasting
+				c.SentMessageChan <- message
 			}
 			return c, nil
 		}

@@ -23,6 +23,10 @@ type NewUserMsg struct {
 	Peer chat.Peer
 }
 
+type ReceivedChatMessage struct {
+	Message chat.TCPMessage
+}
+
 type LeftUserMsg struct {
 	Peer chat.Peer
 }
