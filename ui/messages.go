@@ -2,6 +2,7 @@ package ui
 
 import (
 	"LANChat/chat"
+	"time"
 )
 
 type ChatMessageType int
@@ -23,8 +24,15 @@ type NewUserMsg struct {
 	Peer chat.Peer
 }
 
+// FIX: Decoupled ReceivedChatMessage from chat.TCPMessage.
+// Previously this struct embedded chat.TCPMessage directly, coupling UI to network layer.
+// Now it contains only display-relevant fields (From, Content, Timestamp).
+// This allows the network layer to add encryption fields without affecting UI code.
+// The conversion from TCPMessage to this type happens in main.go.
 type ReceivedChatMessage struct {
-	Message chat.TCPMessage
+	From      string
+	Content   string
+	Timestamp time.Time
 }
 
 type LeftUserMsg struct {
