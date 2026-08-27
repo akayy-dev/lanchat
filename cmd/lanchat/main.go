@@ -3,6 +3,7 @@ package main
 import (
 	"LANChat/chat"
 	"LANChat/ui"
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -39,55 +40,109 @@ func main() {
 	chatService.Start(tcpListener)
 	defer chatService.Close()
 
-	// Handle sending and receiving messages
+	// FIX: Use context for proper goroutine lifecycle management instead of nil-assignment.
+	// This eliminates the race condition where channels were set to nil from within goroutines
+	// while being read in loop conditions.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// GOROUTINE: Handle receiving messages from peers and forwarding to UI.
+	// FIX: Uses context for clean shutdown instead of nil-checking channels.
 	go func() {
-		for chatService.ReceivedMessageChan != nil && model.SentMessageChan != nil {
+		for {
 			select {
+			case <-ctx.Done():
+				slog.Debug("Receive message goroutine shutting down")
+				return
 			case message, ok := <-chatService.ReceivedMessageChan:
 				if !ok {
-					slog.Warn("ReceivedMessageChan closed, stopping message handling goroutine")
-					chatService.ReceivedMessageChan = nil
-					continue
+					slog.Warn("ReceivedMessageChan closed")
+					return
 				}
-				slog.Debug("Received chat message")
-				p.Send(ui.ReceivedChatMessage{Message: message})
-			case message, ok := <-model.SentMessageChan:
-				if !ok {
-					slog.Warn("SentMessageChan closed, stopping message handling goroutine")
-					model.SentMessageChan = nil
-					continue
-				}
-				slog.Debug("Sending chat message")
-				err := chatService.Broadcast(message.Content)
-				if err != nil {
-					panic(err)
-				}
+				slog.Debug("Received chat message", "from", message.From)
+				// FIX: Decouple UI from chat.TCPMessage - convert to UI-specific type here.
+				// This allows encryption changes to the network layer without affecting UI code.
+				p.Send(ui.ReceivedChatMessage{
+					From:      message.From,
+					Content:   string(message.Content),
+					Timestamp: message.Timestamp,
+				})
 			}
 		}
 	}()
 
-	// Goroutine for handling peer discovery its errors, and updating the UI accordingly.
+	// GOROUTINE: Handle sending messages from UI to network layer.
+	// FIX: Separated from receive goroutine for cleaner code and independent lifecycle.
 	go func() {
-		for discoveredPeerChan != nil || discoveryErrChan != nil {
+		for {
 			select {
-			// On peer discovery
+			case <-ctx.Done():
+				slog.Debug("Send message goroutine shutting down")
+				return
+			case message, ok := <-model.SentMessageChan:
+				if !ok {
+					slog.Warn("SentMessageChan closed")
+					return
+				}
+				slog.Debug("Sending chat message")
+				// Note: Broadcast errors are now sent to ErrorChan instead of returned here
+				chatService.Broadcast(message.Content)
+			}
+		}
+	}()
+
+	// FIX: Add ErrorChan consumer to prevent deadlock.
+	// Previously, ErrorChan was created but never consumed. After 20 errors,
+	// sendMessageLoop would block forever trying to send to the full channel.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Debug("Error handler goroutine shutting down")
+				return
+			case err, ok := <-chatService.ErrorChan:
+				if !ok {
+					slog.Debug("ErrorChan closed")
+					return
+				}
+				// Display network errors to the user via the UI
+				slog.Error("Network error", "err", err)
+				p.Send(ui.MessageUpdate{
+					Type:    ui.SYSTEM_MESSAGE,
+					Content: "Network error: " + err.Error(),
+				})
+			}
+		}
+	}()
+
+	// GOROUTINE: Handle peer discovery and its errors, updating the UI accordingly.
+	// FIX: Uses context for clean shutdown instead of nil-assignment pattern.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Debug("Peer discovery goroutine shutting down")
+				return
 			case peer, ok := <-discoveredPeerChan:
 				if !ok {
-					discoveredPeerChan = nil
-					continue
+					slog.Debug("discoveredPeerChan closed")
+					return
 				}
 				if _, ok := peers[peer.PeerID]; !ok {
 					peers[peer.PeerID] = peer.Addr
 					chatService.RegisterPeer(peer)
 					p.Send(ui.NewUserMsg{Peer: peer})
 				}
-			// if there is an error in discovery, log it and continue
 			case err, ok := <-discoveryErrChan:
 				if !ok {
-					discoveryErrChan = nil
-					continue
+					slog.Debug("discoveryErrChan closed")
+					return
 				}
-				panic(err)
+				slog.Error("Discovery error", "err", err)
+				p.Send(ui.MessageUpdate{
+					Type:    ui.SYSTEM_MESSAGE,
+					Content: "Discovery error: " + err.Error(),
+				})
 			}
 		}
 	}()

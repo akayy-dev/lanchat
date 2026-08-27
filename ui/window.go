@@ -55,10 +55,12 @@ func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		c.textinput.Width = msg.Width
 	case ReceivedChatMessage:
+		// FIX: Now uses decoupled ReceivedChatMessage struct instead of chat.TCPMessage.
+		// The conversion happens in main.go, keeping UI independent of network layer details.
 		c.Messages = append(c.Messages, ChatMessage{
 			Type:    USER_MESSAGE,
-			Content: string(msg.Message.Content),
-			From:    msg.Message.From,
+			Content: msg.Content,
+			From:    msg.From,
 		})
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -78,8 +80,20 @@ func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				c.Messages = append(c.Messages, message)
 				c.textinput.SetValue("")
-				// Send the message to the SentMessageChan for broadcasting
-				c.SentMessageChan <- message
+
+				// FIX: Use non-blocking send to prevent UI freeze when channel buffer is full.
+				// The select with default case allows the UI to remain responsive even if
+				// the network layer is slow to consume messages.
+				select {
+				case c.SentMessageChan <- message:
+					// Message sent successfully to network layer
+				default:
+					// Channel buffer is full - notify user but don't block
+					c.Messages = append(c.Messages, ChatMessage{
+						Type:    SYSTEM_MESSAGE,
+						Content: "Warning: Send buffer full, message may not reach all peers",
+					})
+				}
 			}
 			return c, nil
 		}
@@ -128,7 +142,19 @@ func (c ChatWindowModel) View() string {
 			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
 			sb.WriteString(formattedName + " left the chat\n")
 		case USER_MESSAGE:
-			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
+			// FIX: Handle "You" specially since it's not in the Users map.
+			// "You" refers to the local user whose messages are displayed locally without
+			// going through the Users map (which only tracks remote peers).
+			var formattedName string
+			if msg.From == "You" {
+				// Use bold cyan for local user's messages
+				formattedName = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00FFFF")).Render(msg.From)
+			} else if user, ok := c.Users[msg.From]; ok {
+				formattedName = lipgloss.NewStyle().Foreground(lipgloss.Color(user.Color)).Render(msg.From)
+			} else {
+				// Fallback for unknown users (shouldn't happen, but defensive)
+				formattedName = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(msg.From)
+			}
 			sb.WriteString(formattedName + ": " + msg.Content + "\n")
 
 		case SYSTEM_MESSAGE:

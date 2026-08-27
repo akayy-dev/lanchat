@@ -2,8 +2,7 @@ package chat
 
 import (
 	"fmt"
-	"math/rand"
-	"time"
+	"math/rand/v2"
 )
 
 type MessageType int
@@ -20,11 +19,13 @@ type User struct {
 	Color    string `json:"color"`
 }
 
+// FIX: Removed deprecated rand.Seed() call.
+// In Go 1.20+, the global random source is automatically seeded.
+// Also updated to use math/rand/v2 which is the modern API.
 func randomHexString() string {
-	rand.Seed(time.Now().UnixNano()) // Seed with current time
-	r := rand.Intn(256)              // Red: 0–255
-	g := rand.Intn(256)              // Green: 0–255
-	b := rand.Intn(256)              // Blue: 0–255
+	r := rand.IntN(256) // Red: 0–255
+	g := rand.IntN(256) // Green: 0–255
+	b := rand.IntN(256) // Blue: 0–255
 	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
 }
 

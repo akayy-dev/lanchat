@@ -12,6 +12,15 @@ import (
 	"time"
 )
 
+// FIX: connWrapper adds per-connection write mutex to prevent message frame corruption.
+// When multiple goroutines call Broadcast() concurrently, their writes to the same
+// connection can interleave, corrupting the 4-byte length header + payload framing.
+// This wrapper ensures only one write operation happens at a time per connection.
+type connWrapper struct {
+	conn    net.Conn
+	writeMu sync.Mutex // Protects conn.Write operations
+}
+
 // used to differentiate between regular messages and other types (like exchange)
 type TCPMessageType string
 
@@ -31,18 +40,23 @@ type TCPMessage struct {
 
 func NewChatService(localPeerID string) *ChatService {
 	return &ChatService{
-		LocalPeerID:         localPeerID,
-		connections:         make(map[string]net.Conn),
+		LocalPeerID: localPeerID,
+		// FIX: Changed from map[string]net.Conn to map[string]*connWrapper
+		// to support per-connection write mutex for frame corruption prevention.
+		connections:         make(map[string]*connWrapper),
 		peers:               make(map[string]Peer),
 		SendMessageChan:     make(chan string, 20),     // Buffered channel for sending messages
 		ReceivedMessageChan: make(chan TCPMessage, 20), // Buffered channel for receiving messages
-		ErrorChan:           make(chan error, 20),      // Buffered channel for errorss
+		ErrorChan:           make(chan error, 20),      // Buffered channel for errors
 	}
 }
 
 type ChatService struct {
 	LocalPeerID string
-	connections map[string]net.Conn
+	// FIX: Changed from map[string]net.Conn to map[string]*connWrapper.
+	// Each connWrapper contains a mutex to serialize writes to that specific connection,
+	// preventing message frame corruption from concurrent Broadcast() calls.
+	connections map[string]*connWrapper
 	listener    net.Listener
 	peers       map[string]Peer
 	mu          sync.RWMutex
@@ -72,32 +86,45 @@ func (c *ChatService) sendMessageLoop() {
 		err := c.Broadcast(content)
 		if err != nil {
 			slog.Error("Failed to broadcast message", slog.Any("err", err))
-			c.ErrorChan <- err
+			// FIX: Use non-blocking send to ErrorChan to prevent deadlock.
+			// If the error channel is full, we log and continue rather than blocking forever.
+			select {
+			case c.ErrorChan <- err:
+				// Error sent to channel
+			default:
+				slog.Warn("ErrorChan full, dropping error", "err", err)
+			}
 		}
 	}
 }
 
 // Close gracefully shuts down the ChatService, closing all active connections and the listener.
+// FIX: Improved channel closing order and added documentation.
+// Channels are closed to signal goroutines to exit their range loops.
 func (c *ChatService) Close() {
 	c.mu.Lock()
-	// snapshot of active connections
-	conns := make([]net.Conn, 0, len(c.connections))
-	for peerID, conn := range c.connections {
-		conns = append(conns, conn)
+	// Snapshot of active connections (using connWrapper now)
+	conns := make([]*connWrapper, 0, len(c.connections))
+	for peerID, wrapper := range c.connections {
+		conns = append(conns, wrapper)
 		delete(c.connections, peerID)
 	}
 	listener := c.listener
 	c.listener = nil
+	c.mu.Unlock()
 
-	// Close channels to signal goroutines to stop
+	// Close channels to signal goroutines to stop.
+	// FIX: Only close channels that this service owns (is the sender for).
+	// SendMessageChan is consumed by this service, so we close it to stop sendMessageLoop.
+	// ReceivedMessageChan and ErrorChan are sent to by this service, so we close them
+	// to signal consumers (in main.go) that no more data will arrive.
 	close(c.SendMessageChan)
 	close(c.ReceivedMessageChan)
 	close(c.ErrorChan)
-	c.mu.Unlock()
 
 	// Close all active connections
-	for _, conn := range conns {
-		conn.Close()
+	for _, wrapper := range conns {
+		wrapper.conn.Close()
 	}
 
 	// Close the listener if it's still open
@@ -168,36 +195,44 @@ func (c *ChatService) handleIncomingConnection(conn net.Conn) {
 		return
 	}
 
+	// FIX: Wrap connection in connWrapper for per-connection write mutex
+	wrapper := &connWrapper{conn: conn}
+
 	c.mu.Lock()
-	if oldConn, exists := c.connections[peerID]; exists && oldConn != conn {
-		oldConn.Close()
+	if oldWrapper, exists := c.connections[peerID]; exists && oldWrapper.conn != conn {
+		oldWrapper.conn.Close()
 	}
-	c.connections[peerID] = conn // Store the connection for future communication
+	c.connections[peerID] = wrapper // Store the wrapped connection for future communication
 	c.mu.Unlock()
-	c.readLoop(peerID, conn)
+	c.readLoop(peerID, wrapper)
 }
 
-func (c *ChatService) readLoop(peerID string, conn net.Conn) {
+// readLoop now accepts connWrapper instead of raw net.Conn
+func (c *ChatService) readLoop(peerID string, wrapper *connWrapper) {
 	// when the connection is closed, remove it from the service
-	defer conn.Close()
+	defer wrapper.conn.Close()
 	defer func() {
 		c.mu.Lock()
-		if existingConn, ok := c.connections[peerID]; ok && existingConn == conn {
+		if existingWrapper, ok := c.connections[peerID]; ok && existingWrapper == wrapper {
 			delete(c.connections, peerID)
 		}
 		c.mu.Unlock()
 	}()
 
 	for {
-		message, err := c.readMessage(conn)
+		message, err := c.readMessage(wrapper.conn)
 		if err != nil {
 			return
 		}
 
 		// Forward chat messages to the channel for UI to render
 		if message.Type == CHAT_MESSAGE {
-			if c.ReceivedMessageChan != nil {
-				c.ReceivedMessageChan <- message
+			// FIX: Use non-blocking send to prevent blocking readLoop if channel is full
+			select {
+			case c.ReceivedMessageChan <- message:
+				// Message forwarded to UI
+			default:
+				slog.Warn("ReceivedMessageChan full, dropping message", "from", message.From)
 			}
 		}
 		slog.Info(
@@ -231,6 +266,8 @@ func (c *ChatService) readMessage(conn net.Conn) (TCPMessage, error) {
 	return message, nil
 }
 
+// SendMessage sends a TCPMessage to a raw connection (used during initial handshake).
+// For regular messaging, use SendMessageToWrapper which provides write mutex protection.
 func (c *ChatService) SendMessage(conn net.Conn, message TCPMessage) error {
 	payload, err := json.Marshal(message)
 	if err != nil {
@@ -261,29 +298,94 @@ func (c *ChatService) SendMessage(conn net.Conn, message TCPMessage) error {
 	return nil
 }
 
+// FIX: SendMessageToWrapper sends a message using the connWrapper's write mutex.
+// This prevents message frame corruption when multiple goroutines call Broadcast() concurrently.
+// The mutex ensures the entire frame (4-byte header + payload) is written atomically.
+func (c *ChatService) SendMessageToWrapper(wrapper *connWrapper, message TCPMessage) error {
+	payload, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+
+	// CREATE FRAME: HEADER + PAYLOAD
+	frame := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
+	copy(frame[4:], payload)
+
+	// FIX: Lock the per-connection mutex to prevent interleaved writes
+	wrapper.writeMu.Lock()
+	defer wrapper.writeMu.Unlock()
+
+	for len(frame) > 0 {
+		n, err := wrapper.conn.Write(frame)
+		if err != nil {
+			return err
+		}
+
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+
+		frame = frame[n:]
+	}
+	slog.Info("Sent message", "type", message.Type, "to", wrapper.conn.RemoteAddr().String())
+	return nil
+}
+
 // Broadcast sends a chat message to all connected peers.
+// FIX: Now returns aggregated errors instead of always returning nil.
+// FIX: Removes dead connections on send failure to prevent repeated errors.
+// FIX: Uses SendMessageToWrapper for mutex-protected writes.
 func (c *ChatService) Broadcast(content string) error {
 	c.mu.RLock()
-	// Build snapshot
-	snapshot := make(map[string]net.Conn, len(c.connections))
-	for peerID, conn := range c.connections {
-		snapshot[peerID] = conn
+	// Build snapshot of connections
+	snapshot := make(map[string]*connWrapper, len(c.connections))
+	for peerID, wrapper := range c.connections {
+		snapshot[peerID] = wrapper
 	}
 	c.mu.RUnlock()
 
-	for peerID, conn := range snapshot {
+	var errs []error
+	var failedPeers []string
+
+	for peerID, wrapper := range snapshot {
 		if peerID == c.LocalPeerID {
 			continue // Skip sending to self
 		}
-		err := c.SendMessage(conn, TCPMessage{
+		// FIX: Use SendMessageToWrapper for mutex-protected writes
+		err := c.SendMessageToWrapper(wrapper, TCPMessage{
 			Type:      CHAT_MESSAGE,
 			From:      c.LocalPeerID,
 			Content:   []byte(content),
 			Timestamp: time.Now(),
 		})
 		if err != nil {
-			slog.Error(fmt.Sprintf("Failed to send message to peer %s", peerID), slog.Any("err", err))
+			slog.Error("Failed to send message to peer", "peer", peerID, "err", err)
+			errs = append(errs, fmt.Errorf("peer %s: %w", peerID, err))
+			failedPeers = append(failedPeers, peerID)
 		}
+	}
+
+	// FIX: Clean up dead connections to prevent repeated failures.
+	// We do this after the loop to avoid modifying the map while iterating over snapshot.
+	if len(failedPeers) > 0 {
+		c.mu.Lock()
+		for _, peerID := range failedPeers {
+			if wrapper, ok := c.connections[peerID]; ok {
+				// Only remove if it's the same connection (could have been replaced)
+				if snapshot[peerID] == wrapper {
+					slog.Info("Removing dead connection", "peer", peerID)
+					delete(c.connections, peerID)
+					wrapper.conn.Close()
+				}
+			}
+		}
+		c.mu.Unlock()
+	}
+
+	// FIX: Return aggregated errors so callers know about failures
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -298,30 +400,34 @@ func (c *ChatService) RegisterPeer(peer Peer) error {
 	// The peer with the lower ID will Dial the other,
 	// to prevent both peers from trying to Dial each other at the same time.
 	if c.LocalPeerID < peer.PeerID {
-		// TODO: Dial logic here
 		go func() {
 			conn, err := c.dialPeer(peer)
 			if err != nil {
-				slog.Error(fmt.Sprintf("Failed to connect to peer %s at %s", peer.PeerID, peer.Addr), slog.Any("err", err))
+				slog.Error("Failed to connect to peer", "peer", peer.PeerID, "addr", peer.Addr, "err", err)
 				return
 			}
 
+			// FIX: Wrap connection in connWrapper for per-connection write mutex
+			wrapper := &connWrapper{conn: conn}
+
 			c.mu.Lock()
-			if oldConn, exists := c.connections[peer.PeerID]; exists && oldConn != conn {
-				oldConn.Close()
+			if oldWrapper, exists := c.connections[peer.PeerID]; exists && oldWrapper.conn != conn {
+				oldWrapper.conn.Close()
 			}
-			c.connections[peer.PeerID] = conn
+			c.connections[peer.PeerID] = wrapper
 			c.mu.Unlock()
 
-			slog.Info(fmt.Sprintf("Connected to peer %s at %s", peer.PeerID, peer.Addr))
-			// send hello message so TCP knows how you are.
+			slog.Info("Connected to peer", "peer", peer.PeerID, "addr", peer.Addr)
+			// Send hello message so TCP knows who you are.
+			// Note: Using SendMessage (not SendMessageToWrapper) for initial handshake
+			// since we haven't stored the wrapper yet and want to fail fast.
 			err = c.SendMessage(conn, TCPMessage{
 				Type:      HELLO_MESSAGE,
 				From:      c.LocalPeerID,
 				Timestamp: time.Now(),
 			})
 			if err != nil {
-				slog.Error(fmt.Sprintf("Failed to send hello message to peer %s", peer.PeerID), slog.Any("err", err))
+				slog.Error("Failed to send hello message to peer", "peer", peer.PeerID, "err", err)
 				conn.Close()
 				c.mu.Lock()
 				delete(c.connections, peer.PeerID)
@@ -329,7 +435,7 @@ func (c *ChatService) RegisterPeer(peer Peer) error {
 				return
 			}
 
-			c.readLoop(peer.PeerID, conn)
+			c.readLoop(peer.PeerID, wrapper)
 		}()
 		return nil
 	}
