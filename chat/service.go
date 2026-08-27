@@ -88,6 +88,11 @@ func (c *ChatService) Close() {
 	}
 	listener := c.listener
 	c.listener = nil
+
+	// Close channels to signal goroutines to stop
+	close(c.SendMessageChan)
+	close(c.ReceivedMessageChan)
+	close(c.ErrorChan)
 	c.mu.Unlock()
 
 	// Close all active connections
