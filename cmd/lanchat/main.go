@@ -11,6 +11,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// Use this to allow the ChatWindowModel to implement the io.Writer interface, enabling it to be used as a log writer.
+type TeaLogWriter struct {
+	Program *tea.Program
+}
+
+// Writes a SYSTEM_MESSAGE to the screen as if it was a chat message, useful for logging as it implementst he io.Writer interface.
+func (w TeaLogWriter) Write(b []byte) (int, error) {
+	w.Program.Send(ui.MessageUpdate{
+		Type:    ui.SYSTEM_MESSAGE,
+		Content: string(b),
+	})
+	return len(b), nil
+}
+
 func main() {
 	// SETUP UI
 	model := ui.NewChatWindowModel()
@@ -22,7 +36,7 @@ func main() {
 		panic(err)
 	}
 	defer logFile.Close()
-	logger := slog.New(slog.NewTextHandler(io.MultiWriter(logFile, model), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewTextHandler(io.MultiWriter(logFile, TeaLogWriter{Program: p}), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
 	// SETUP MULTICAST DISCOVERY NETWORKING
