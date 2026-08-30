@@ -19,9 +19,6 @@ type User struct {
 	Color    string `json:"color"`
 }
 
-// FIX: Removed deprecated rand.Seed() call.
-// In Go 1.20+, the global random source is automatically seeded.
-// Also updated to use math/rand/v2 which is the modern API.
 func randomHexString() string {
 	r := rand.IntN(256) // Red: 0–255
 	g := rand.IntN(256) // Green: 0–255

@@ -54,10 +54,8 @@ func main() {
 	chatService.Start(tcpListener)
 	defer chatService.Close()
 
-	// FIX: Use context for proper goroutine lifecycle management instead of nil-assignment.
-	// This eliminates the race condition where channels were set to nil from within goroutines
-	// while being read in loop conditions.
 	ctx, cancel := context.WithCancel(context.Background())
+	// shutdown goroutine when main() ends
 	defer cancel()
 
 	// GOROUTINE: Handle receiving messages from peers and forwarding to UI.
@@ -65,6 +63,7 @@ func main() {
 	go func() {
 		for {
 			select {
+			// wait for context cancellation to gracefully shut down the goroutine
 			case <-ctx.Done():
 				slog.Debug("Receive message goroutine shutting down")
 				return
@@ -74,8 +73,6 @@ func main() {
 					return
 				}
 				slog.Debug("Received chat message", "from", message.From)
-				// FIX: Decouple UI from chat.TCPMessage - convert to UI-specific type here.
-				// This allows encryption changes to the network layer without affecting UI code.
 				p.Send(ui.ReceivedChatMessage{
 					From:      message.From,
 					Content:   string(message.Content),
