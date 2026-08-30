@@ -58,8 +58,7 @@ func main() {
 	// shutdown goroutine when main() ends
 	defer cancel()
 
-	// GOROUTINE: Handle receiving messages from peers and forwarding to UI.
-	// FIX: Uses context for clean shutdown instead of nil-checking channels.
+	// Handle receiving messages from peers and forwarding to UI.
 	go func() {
 		for {
 			select {
@@ -102,9 +101,6 @@ func main() {
 		}
 	}()
 
-	// FIX: Add ErrorChan consumer to prevent deadlock.
-	// Previously, ErrorChan was created but never consumed. After 20 errors,
-	// sendMessageLoop would block forever trying to send to the full channel.
 	go func() {
 		for {
 			select {
