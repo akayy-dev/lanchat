@@ -26,9 +26,10 @@ type TCPMessageType string
 
 const (
 	// Used to announce presence to listeners, and to exchange public keys for encryption.
-	HELLO_MESSAGE  TCPMessageType = "hello"
-	CHAT_MESSAGE   TCPMessageType = "chat"
-	maxMessageSize                = 1 << 20 // 1 MiB safety cap for framed payloads.
+	PUBKEY_HANDSHAKE TCPMessageType = "pubkey_handshake"
+	SENDER_KEY       TCPMessageType = "sender_key"
+	CHAT_MESSAGE     TCPMessageType = "chat"
+	maxMessageSize                  = 1 << 20 // 1 MiB safety cap for framed payloads.
 )
 
 type TCPMessage struct {
@@ -48,6 +49,7 @@ func NewChatService(localPeerID string) *ChatService {
 		SendMessageChan:     make(chan string, 20),     // Buffered channel for sending messages
 		ReceivedMessageChan: make(chan TCPMessage, 20), // Buffered channel for receiving messages
 		ErrorChan:           make(chan error, 20),      // Buffered channel for errors
+		EncryptionService:   *NewSenderKeyEncryptor(),
 	}
 }
 
@@ -56,10 +58,11 @@ type ChatService struct {
 	// FIX: Changed from map[string]net.Conn to map[string]*connWrapper.
 	// Each connWrapper contains a mutex to serialize writes to that specific connection,
 	// preventing message frame corruption from concurrent Broadcast() calls.
-	connections map[string]*connWrapper
-	listener    net.Listener
-	peers       map[string]Peer
-	mu          sync.RWMutex
+	connections       map[string]*connWrapper
+	listener          net.Listener
+	peers             map[string]Peer
+	mu                sync.RWMutex
+	EncryptionService SenderKeyEncryptor
 
 	// Channels for sending and receiving updates
 	SendMessageChan     chan string     // UI will send messages to this channel to broadcast to all peers
@@ -185,8 +188,9 @@ func (c *ChatService) handleIncomingConnection(conn net.Conn) {
 	}
 
 	switch message.Type {
-	case HELLO_MESSAGE:
-		slog.Info("received hello", "from", peerID)
+	case PUBKEY_HANDSHAKE:
+		c.EncryptionService.RegisterPeer(peerID, message.Content)
+		slog.Info(fmt.Sprintf("Handshake message from %s", peerID), slog.String("pubkey", string(message.Content)))
 	case CHAT_MESSAGE:
 		slog.Info("Received chat message", "from", message.From, "content", string(message.Content))
 	default:
@@ -422,7 +426,9 @@ func (c *ChatService) RegisterPeer(peer Peer) error {
 			// Note: Using SendMessage (not SendMessageToWrapper) for initial handshake
 			// since we haven't stored the wrapper yet and want to fail fast.
 			err = c.SendMessage(conn, TCPMessage{
-				Type:      HELLO_MESSAGE,
+				Type: PUBKEY_HANDSHAKE,
+				// Send the public key on the handshake, so we can initiate encryption with the peer.
+				Content:   c.EncryptionService.PublicKey.Bytes(),
 				From:      c.LocalPeerID,
 				Timestamp: time.Now(),
 			})

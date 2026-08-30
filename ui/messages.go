@@ -24,11 +24,6 @@ type NewUserMsg struct {
 	Peer chat.Peer
 }
 
-// FIX: Decoupled ReceivedChatMessage from chat.TCPMessage.
-// Previously this struct embedded chat.TCPMessage directly, coupling UI to network layer.
-// Now it contains only display-relevant fields (From, Content, Timestamp).
-// This allows the network layer to add encryption fields without affecting UI code.
-// The conversion from TCPMessage to this type happens in main.go.
 type ReceivedChatMessage struct {
 	From      string
 	Content   string
