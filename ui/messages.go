@@ -15,9 +15,10 @@ const (
 )
 
 type ChatMessage struct {
-	Type    ChatMessageType
-	Content string
-	From    string
+	Type      ChatMessageType
+	Content   string
+	From      string
+	Timestamp time.Time
 }
 
 type NewUserMsg struct {
