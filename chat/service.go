@@ -289,7 +289,6 @@ func (c *ChatService) readLoop(peerID string, wrapper *connWrapper) {
 		case CHAT_MESSAGE:
 			// decrypt message with sender key before forwarding to UI
 			decryptedContent, err := c.EncryptionService.DecryptMessageWithSenderKey(peerID, message.Content)
-			decryptedContent = message.Content
 			if err != nil {
 				slog.Error("Failed to decrypt message", slog.Any("err", err))
 				continue

@@ -1,7 +1,9 @@
-package ui
+package models
 
 import (
 	"strings"
+
+	"LANChat/ui"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,18 +15,18 @@ func NewChatWindowModel() ChatWindowModel {
 	input.Placeholder = "Type a message..."
 	input.Focus()
 	model := ChatWindowModel{
-		Users:           make(map[string]User),
-		Messages:        make([]ChatMessage, 0),
-		SentMessageChan: make(chan ChatMessage, 1),
+		Users:           make(map[string]ui.User),
+		Messages:        make([]ui.ChatMessage, 0),
+		SentMessageChan: make(chan ui.ChatMessage, 1),
 		textinput:       input,
 	}
 	return model
 }
 
 type ChatWindowModel struct {
-	Users           map[string]User
-	Messages        []ChatMessage
-	SentMessageChan chan ChatMessage
+	Users           map[string]ui.User
+	Messages        []ui.ChatMessage
+	SentMessageChan chan ui.ChatMessage
 	textinput       textinput.Model
 }
 
@@ -34,7 +36,7 @@ func (c ChatWindowModel) Init() tea.Cmd {
 	initCmd := func() tea.Msg {
 		return InitMsg{}
 	}
-	return tea.Batch(initCmd, textinput.Blink, tea.WindowSize())
+	return tea.Batch(tea.ClearScreen, initCmd, textinput.Blink, tea.WindowSize())
 }
 
 func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -45,11 +47,11 @@ func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return c, nil
 	case tea.WindowSizeMsg:
 		c.textinput.Width = msg.Width
-	case ReceivedChatMessage:
+	case ui.ReceivedChatMessage:
 		// FIX: Now uses decoupled ReceivedChatMessage struct instead of chat.TCPMessage.
 		// The conversion happens in main.go, keeping UI independent of network layer details.
-		c.Messages = append(c.Messages, ChatMessage{
-			Type:    USER_MESSAGE,
+		c.Messages = append(c.Messages, ui.ChatMessage{
+			Type:    ui.USER_MESSAGE,
 			Content: msg.Content,
 			From:    msg.From,
 		})
@@ -64,8 +66,8 @@ func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if input != "" {
-				message := ChatMessage{
-					Type:    USER_MESSAGE,
+				message := ui.ChatMessage{
+					Type:    ui.USER_MESSAGE,
 					From:    "You",
 					Content: c.textinput.Value(),
 				}
@@ -80,36 +82,36 @@ func (c ChatWindowModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Message sent successfully to network layer
 				default:
 					// Channel buffer is full - notify user but don't block
-					c.Messages = append(c.Messages, ChatMessage{
-						Type:    SYSTEM_MESSAGE,
+					c.Messages = append(c.Messages, ui.ChatMessage{
+						Type:    ui.SYSTEM_MESSAGE,
 						Content: "Warning: Send buffer full, message may not reach all peers",
 					})
 				}
 			}
 			return c, nil
 		}
-	case NewUserMsg:
-		user := User{
+	case ui.NewUserMsg:
+		user := ui.User{
 			Name:  msg.Peer.PeerID,
-			Color: generateRandomHexString(),
+			Color: ui.GenerateRandomHexString(),
 		}
 		c.Users[msg.Peer.PeerID] = user
 
 		// Format the user name with their color using lipgloss
-		joinMsg := ChatMessage{
-			Type: USER_JOIN,
+		joinMsg := ui.ChatMessage{
+			Type: ui.USER_JOIN,
 			From: user.Name,
 		}
 		c.Messages = append(c.Messages, joinMsg)
-	case LeftUserMsg:
-		leftMsg := ChatMessage{
-			Type: USER_LEFT,
+	case ui.LeftUserMsg:
+		leftMsg := ui.ChatMessage{
+			Type: ui.USER_LEFT,
 			From: msg.Peer.PeerID,
 		}
 		c.Messages = append(c.Messages, leftMsg)
 		delete(c.Users, msg.Peer.PeerID)
-	case MessageUpdate:
-		c.Messages = append(c.Messages, ChatMessage{
+	case ui.MessageUpdate:
+		c.Messages = append(c.Messages, ui.ChatMessage{
 			Type:    msg.Type,
 			Content: msg.Content,
 			From:    msg.From,
@@ -125,15 +127,14 @@ func (c ChatWindowModel) View() string {
 		sb.WriteString("Waiting for peers to join...\n")
 	}
 	for _, msg := range c.Messages {
+		formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
 		switch msg.Type {
-		case USER_JOIN:
-			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
+		case ui.USER_JOIN:
 			sb.WriteString(formattedName + " joined the chat\n")
-		case USER_LEFT:
-			formattedName := lipgloss.NewStyle().Foreground(lipgloss.Color(c.Users[msg.From].Color)).Render(msg.From)
+		case ui.USER_LEFT:
 			sb.WriteString(formattedName + " left the chat\n")
-		case USER_MESSAGE:
-			// FIX: Handle "You" specially since it's not in the Users map.
+		case ui.USER_MESSAGE:
+			// HACK: Handle "You" specially since it's not in the Users map.
 			// "You" refers to the local user whose messages are displayed locally without
 			// going through the Users map (which only tracks remote peers).
 			var formattedName string
@@ -143,12 +144,11 @@ func (c ChatWindowModel) View() string {
 			} else if user, ok := c.Users[msg.From]; ok {
 				formattedName = lipgloss.NewStyle().Foreground(lipgloss.Color(user.Color)).Render(msg.From)
 			} else {
-				// Fallback for unknown users (shouldn't happen, but defensive)
 				formattedName = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(msg.From)
 			}
 			sb.WriteString(formattedName + ": " + msg.Content + "\n")
 
-		case SYSTEM_MESSAGE:
+		case ui.SYSTEM_MESSAGE:
 			formattedContent := lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(8)).Render(msg.Content)
 			sb.WriteString(formattedContent + "\n")
 		}

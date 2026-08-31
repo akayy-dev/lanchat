@@ -10,6 +10,6 @@ type User struct {
 	Color string
 }
 
-func generateRandomHexString() string {
+func GenerateRandomHexString() string {
 	return fmt.Sprintf("#%06X", rand.Intn(0xFFFFFF+1))
 }

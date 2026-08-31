@@ -3,6 +3,7 @@ package main
 import (
 	"LANChat/chat"
 	"LANChat/ui"
+	"LANChat/ui/models"
 	"context"
 	"io"
 	"log/slog"
@@ -33,7 +34,7 @@ type Config struct {
 
 func Execute(config Config) {
 	// SETUP UI
-	model := ui.NewChatWindowModel()
+	model := models.NewChatWindowModel()
 	p := tea.NewProgram(model)
 
 	// SETUP LOGGING
