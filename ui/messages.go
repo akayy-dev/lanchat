@@ -2,6 +2,7 @@ package ui
 
 import (
 	"LANChat/chat"
+	"time"
 )
 
 type ChatMessageType int
@@ -14,9 +15,10 @@ const (
 )
 
 type ChatMessage struct {
-	Type    ChatMessageType
-	Content string
-	From    string
+	Type      ChatMessageType
+	Content   string
+	From      string
+	Timestamp time.Time
 }
 
 type NewUserMsg struct {
@@ -24,7 +26,9 @@ type NewUserMsg struct {
 }
 
 type ReceivedChatMessage struct {
-	Message chat.TCPMessage
+	From      string
+	Content   string
+	Timestamp time.Time
 }
 
 type LeftUserMsg struct {

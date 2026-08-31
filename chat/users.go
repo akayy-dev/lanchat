@@ -2,8 +2,7 @@ package chat
 
 import (
 	"fmt"
-	"math/rand"
-	"time"
+	"math/rand/v2"
 )
 
 type MessageType int
@@ -21,10 +20,9 @@ type User struct {
 }
 
 func randomHexString() string {
-	rand.Seed(time.Now().UnixNano()) // Seed with current time
-	r := rand.Intn(256)              // Red: 0–255
-	g := rand.Intn(256)              // Green: 0–255
-	b := rand.Intn(256)              // Blue: 0–255
+	r := rand.IntN(256) // Red: 0–255
+	g := rand.IntN(256) // Green: 0–255
+	b := rand.IntN(256) // Blue: 0–255
 	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
 }
 
