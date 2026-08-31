@@ -282,13 +282,18 @@ func (c ChatWindowModel) formatMessage(msg ui.ChatMessage, index int, maxWidth i
 }
 
 func (c ChatWindowModel) View() string {
-	// Calculate dimensions - account for borders (2 chars each side)
-	chatWidth := c.width - sidebarWidth - 4
+	// Calculate dimensions
+	// Sidebar takes sidebarWidth + 2 (for border)
+	// Left panel gets the rest
+	chatWidth := c.width - sidebarWidth - 2
 	if chatWidth < 20 {
 		chatWidth = 20
 	}
-	// Height: total - input box (3 lines) - input border (2 lines)
-	chatHeight := c.height - 5
+
+	// Input box: 1 line content + 2 lines border (top/bottom) = 3 lines total
+	inputBoxHeight := 3
+	// Chat area gets remaining height
+	chatHeight := c.height - inputBoxHeight
 
 	// Build chat messages area
 	var chatContent strings.Builder
@@ -299,9 +304,10 @@ func (c ChatWindowModel) View() string {
 		chatContent.WriteString(c.formatMessage(msg, i, chatWidth-2) + "\n")
 	}
 
-	// Style the chat area with proper height
+	// Style the chat area - no border, just padding
+	// Height is content height (total - input)
 	chatArea := chatAreaStyle.
-		Width(chatWidth - 2).
+		Width(chatWidth).
 		Height(chatHeight).
 		Render(chatContent.String())
 
@@ -323,8 +329,8 @@ func (c ChatWindowModel) View() string {
 	// Combine chat area and input vertically
 	leftPanel := lipgloss.JoinVertical(lipgloss.Left, chatArea, styledInput)
 
-	// Build sidebar with users list - match total height
-	sidebar := c.renderSidebar(c.height - 2)
+	// Build sidebar with users list - full terminal height
+	sidebar := c.renderSidebar(c.height)
 
 	// Join left panel and sidebar horizontally
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, sidebar)
@@ -365,7 +371,8 @@ func (c ChatWindowModel) renderSidebar(height int) string {
 	}
 
 	// Apply sidebar style with rounded border
-	// Height accounts for border (2 lines)
+	// Border adds 2 lines (top + bottom), so content height is height - 2
+	// But we also have padding (0, 1) which doesn't add vertical space
 	return sidebarStyle.
 		Width(sidebarWidth).
 		Height(height - 2).

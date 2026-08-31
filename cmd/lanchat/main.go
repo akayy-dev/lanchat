@@ -18,7 +18,7 @@ type TeaLogWriter struct {
 	Program *tea.Program
 }
 
-// Writes a SYSTEM_MESSAGE to the screen as if it was a chat message, useful for logging as it implementst he io.Writer interface.
+// Writes a SYSTEM_MESSAGE to the screen as if it was a chat message, useful for logging as it implements he io.Writer interface.
 func (w TeaLogWriter) Write(b []byte) (int, error) {
 	w.Program.Send(ui.MessageUpdate{
 		Type:    ui.SYSTEM_MESSAGE,
@@ -35,16 +35,18 @@ type Config struct {
 func Execute(config Config) {
 	// SETUP UI
 	model := models.NewChatWindowModel()
-	p := tea.NewProgram(model)
+	// Use AltScreen to take over the full terminal and restore it on exit
+	p := tea.NewProgram(model, tea.WithAltScreen())
 
-	// SETUP LOGGING
-	logFile, err := os.OpenFile("lanchat.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		panic(err)
-	}
-	defer logFile.Close()
-	writers := []io.Writer{logFile}
+	var writers []io.Writer
 	if config.VerboseMode {
+		// SETUP LOGGING
+		logFile, err := os.OpenFile("lanchat.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			panic(err)
+		}
+		defer logFile.Close()
+		writers := []io.Writer{logFile}
 		writers = append(writers, TeaLogWriter{Program: p})
 	}
 	multiWriter := io.MultiWriter(writers...)
@@ -134,8 +136,7 @@ func Execute(config Config) {
 		}
 	}()
 
-	// GOROUTINE: Handle peer discovery and its errors, updating the UI accordingly.
-	// FIX: Uses context for clean shutdown instead of nil-assignment pattern.
+	// this goroutine handles peer discovery events and propogates updates to the UI
 	go func() {
 		for {
 			select {
