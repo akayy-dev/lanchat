@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// FIX: connWrapper adds per-connection write mutex to prevent message frame corruption.
+// connWrapper adds per-connection write mutex to prevent message frame corruption.
 // When multiple goroutines call Broadcast() concurrently, their writes to the same
 // connection can interleave, corrupting the 4-byte length header + payload framing.
 // This wrapper ensures only one write operation happens at a time per connection.
@@ -27,9 +27,11 @@ type TCPMessageType string
 const (
 	// Used to announce presence to listeners, and to exchange public keys for encryption.
 	PUBKEY_HANDSHAKE TCPMessageType = "pubkey_handshake"
-	SENDER_KEY       TCPMessageType = "sender_key"
-	CHAT_MESSAGE     TCPMessageType = "chat"
-	maxMessageSize                  = 1 << 20 // 1 MiB safety cap for framed payloads.
+	// Used to send the sender key to a peer after the public key exchange.
+	SENDER_KEY TCPMessageType = "sender_key"
+	// Regular chat message
+	CHAT_MESSAGE   TCPMessageType = "chat"
+	maxMessageSize                = 1 << 20 // 1 MiB safety cap for framed payloads.
 )
 
 type TCPMessage struct {
@@ -99,8 +101,6 @@ func (c *ChatService) sendMessageLoop() {
 }
 
 // Close gracefully shuts down the ChatService, closing all active connections and the listener.
-// FIX: Improved channel closing order and added documentation.
-// Channels are closed to signal goroutines to exit their range loops.
 func (c *ChatService) Close() {
 	c.mu.Lock()
 	// Snapshot of active connections (using connWrapper now)
@@ -113,11 +113,7 @@ func (c *ChatService) Close() {
 	c.listener = nil
 	c.mu.Unlock()
 
-	// Close channels to signal goroutines to stop.
-	// FIX: Only close channels that this service owns (is the sender for).
-	// SendMessageChan is consumed by this service, so we close it to stop sendMessageLoop.
-	// ReceivedMessageChan and ErrorChan are sent to by this service, so we close them
-	// to signal consumers (in main.go) that no more data will arrive.
+	// Close channels to signal other goroutines to stop.
 	close(c.SendMessageChan)
 	close(c.ReceivedMessageChan)
 	close(c.ErrorChan)
@@ -171,7 +167,7 @@ func (c *ChatService) acceptLoop() {
 // handlePublicKeyExchange handles the public key exchange handshake with a peer.
 // It registers the peer's public key, computes the shared secret, derives the sender key,
 // and sends both our public key and sender key back to the peer.
-// The isResponder parameter indicates if we are responding to an initial handshake (true)
+// isResponder parameter indicates if we are responding to an initial handshake (true)
 // or if we initiated the connection and are receiving a response (false).
 func (c *ChatService) handlePublicKeyExchange(peerID string, conn net.Conn, remotePublicKey []byte, isResponder bool) error {
 	// Register the peer and compute shared secret
@@ -196,11 +192,18 @@ func (c *ChatService) handlePublicKeyExchange(peerID string, conn net.Conn, remo
 		}
 	}
 
-	// Always send our sender key so the peer can decrypt messages from us
+	// Encrypt the sender key with the shared secret before sending
+	// This ensures the sender key is never transmitted in plaintext
+	encryptedSenderKey, err := c.EncryptionService.EncryptMessageWithSharedSecret(peerID, senderKey)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt sender key: %w", err)
+	}
+
+	// Send our encrypted sender key so the peer can decrypt messages from us
 	if err := c.SendMessage(conn, TCPMessage{
 		Type:      SENDER_KEY,
 		From:      c.LocalPeerID,
-		Content:   senderKey,
+		Content:   encryptedSenderKey,
 		Timestamp: time.Now(),
 	}); err != nil {
 		return err
@@ -268,18 +271,30 @@ func (c *ChatService) readLoop(peerID string, wrapper *connWrapper) {
 
 		switch message.Type {
 		case PUBKEY_HANDSHAKE:
-			slog.Info("Got public key")
+			slog.Debug("Got public key")
 			// We are the initiator (dialer) receiving a response - don't send pubkey again
 			if err := c.handlePublicKeyExchange(peerID, wrapper.conn, message.Content, false); err != nil {
 				slog.Error("Failed to exchange public keys", slog.Any("err", err))
 				return
 			}
 		case SENDER_KEY:
-			slog.Info("Got sender key")
-			c.EncryptionService.SetSenderKey(peerID, message.Content)
+			slog.Debug("Got sender key (encrypted)")
+			// Decrypt the sender key using the shared secret
+			decryptedSenderKey, err := c.EncryptionService.DecryptMessageWithSharedSecret(peerID, message.Content)
+			if err != nil {
+				slog.Error("Failed to decrypt sender key", slog.Any("err", err))
+				return
+			}
+			c.EncryptionService.SetSenderKey(peerID, decryptedSenderKey)
 		case CHAT_MESSAGE:
-			// Forward chat messages to the channel for UI to render
-			// FIX: Use non-blocking send to prevent blocking readLoop if channel is full
+			// decrypt message with sender key before forwarding to UI
+			decryptedContent, err := c.EncryptionService.DecryptMessageWithSenderKey(peerID, message.Content)
+			decryptedContent = message.Content
+			if err != nil {
+				slog.Error("Failed to decrypt message", slog.Any("err", err))
+				continue
+			}
+			message.Content = decryptedContent
 			select {
 			case c.ReceivedMessageChan <- message:
 				// Message forwarded to UI
@@ -359,7 +374,7 @@ func (c *ChatService) SendMessageToWrapper(wrapper *connWrapper, message TCPMess
 	binary.BigEndian.PutUint32(frame[:4], uint32(len(payload)))
 	copy(frame[4:], payload)
 
-	// FIX: Lock the per-connection mutex to prevent interleaved writes
+	// Lock the mutex so connection only writes one message at a time.
 	wrapper.writeMu.Lock()
 	defer wrapper.writeMu.Unlock()
 
@@ -406,7 +421,6 @@ func (c *ChatService) Broadcast(content string) error {
 			continue
 		}
 
-		// FIX: Use SendMessageToWrapper for mutex-protected writes
 		err = c.SendMessageToWrapper(wrapper, TCPMessage{
 			Type:      CHAT_MESSAGE,
 			From:      c.LocalPeerID,

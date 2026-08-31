@@ -9,6 +9,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/spf13/cobra"
 )
 
 // Use this to allow the ChatWindowModel to implement the io.Writer interface, enabling it to be used as a log writer.
@@ -25,7 +26,12 @@ func (w TeaLogWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func main() {
+type Config struct {
+	// Should logs show up on the UI as messages?
+	VerboseMode bool
+}
+
+func Execute(config Config) {
 	// SETUP UI
 	model := ui.NewChatWindowModel()
 	p := tea.NewProgram(model)
@@ -36,7 +42,12 @@ func main() {
 		panic(err)
 	}
 	defer logFile.Close()
-	logger := slog.New(slog.NewTextHandler(io.MultiWriter(logFile, TeaLogWriter{Program: p}), &slog.HandlerOptions{Level: slog.LevelDebug}))
+	writers := []io.Writer{logFile}
+	if config.VerboseMode {
+		writers = append(writers, TeaLogWriter{Program: p})
+	}
+	multiWriter := io.MultiWriter(writers...)
+	logger := slog.New(slog.NewTextHandler(multiWriter, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 
 	// SETUP MULTICAST DISCOVERY NETWORKING
@@ -156,4 +167,17 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		panic(err)
 	}
+}
+
+func main() {
+	config := Config{}
+	rootCmd := cobra.Command{
+		Use:   "lanchat",
+		Short: "A secure, peer-to-peer LAN chat application",
+		Run: func(cmd *cobra.Command, args []string) {
+			Execute(config)
+		},
+	}
+	rootCmd.Flags().BoolVarP(&config.VerboseMode, "verbose", "v", false, "Enable verbose logging to the UI")
+	rootCmd.Execute()
 }

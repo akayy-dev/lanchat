@@ -56,6 +56,34 @@ func (e *SenderKeyEncryptor) EncryptMessageWithSenderKey(peerID string, message 
 	return gcm.Seal(nonce, nonce, message, nil), nil
 }
 
+// Use the sender key to decrypt a message received from a peer.
+func (e *SenderKeyEncryptor) DecryptMessageWithSenderKey(peerID string, ciphertext []byte) ([]byte, error) {
+	e.mu.RLock()
+	senderKey, exists := e.SenderKeys[peerID]
+	e.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("no sender key found for peer %s", peerID)
+	}
+
+	block, err := aes.NewCipher(senderKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
 func (e *SenderKeyEncryptor) EncryptMessageWithSharedSecret(peerID string, message []byte) ([]byte, error) {
 	e.mu.RLock()
 	sharedSecret, exists := e.SharedSecrets[peerID]
@@ -65,12 +93,54 @@ func (e *SenderKeyEncryptor) EncryptMessageWithSharedSecret(peerID string, messa
 		return nil, fmt.Errorf("no shared secret found for peer %s", peerID)
 	}
 
-	block, _ := aes.NewCipher(sharedSecret)
+	// Derive an encryption key from the shared secret using HKDF
+	encKey := e.deriveKeyFromSharedSecret(sharedSecret)
+
+	block, _ := aes.NewCipher(encKey)
 	gcm, _ := cipher.NewGCM(block)
 
 	nonce := make([]byte, gcm.NonceSize())
 	rand.Read(nonce) //refresh the nonce every function call to ensure randomness
 	return gcm.Seal(nonce, nonce, message, nil), nil
+}
+
+func (e *SenderKeyEncryptor) DecryptMessageWithSharedSecret(peerID string, ciphertext []byte) ([]byte, error) {
+	e.mu.RLock()
+	sharedSecret, exists := e.SharedSecrets[peerID]
+	e.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("no shared secret found for peer %s", peerID)
+	}
+
+	// Derive the same encryption key from the shared secret
+	encKey := e.deriveKeyFromSharedSecret(sharedSecret)
+
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// deriveKeyFromSharedSecret derives a 256-bit encryption key from the raw ECDH shared secret
+// using HKDF. This is used to encrypt/decrypt the sender key exchange.
+func (e *SenderKeyEncryptor) deriveKeyFromSharedSecret(sharedSecret []byte) []byte {
+	h := hkdf.New(sha256.New, sharedSecret, nil, []byte("lanchat-shared-secret-encryption"))
+	key := make([]byte, 32) // 256-bit key
+	h.Read(key)
+	return key
 }
 
 func (e *SenderKeyEncryptor) ComputeSharedSecret(peerPublicKey ecdh.PublicKey) ([]byte, error) {
