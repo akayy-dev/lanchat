@@ -1,33 +1,24 @@
-# LANChat - P2P Chat Protocol utilizing Multicast and TCP
-
-A simple, real-time chat application for local area networks (LAN). Discover and chat with other users on your network without any server setup.
-
-## Features
-
-- **Automatic Peer Discovery**: Finds other LANChat users on your network automatically using multicast
-- **Real-time Messaging**: Send and receive messages instantly over TCP
-- **Terminal UI**: Clean, colorful chat interface in your terminal
-- **User Presence**: See when users join and leave the chat
-- **No Server Required**: Fully peer-to-peer - just run and chat
+# LANChat - P2P Chat Application with Live Discovery and Secure Encryption
+![screenshot of app](./doc/screenshot.png)
+A simple, secure, and real-time chat application for local area networks that protects against packet sniffing.
 
 ## How It Works
 
-LANChat uses a two-stage networking approach:
+The LANChat application consists of three parts:
 
-1. **Discovery (Multicast)**: Each client broadcasts their presence and contact information over the local network using multicast UDP. This allows automatic peer discovery without manual configuration.
+1. **Discovery:** Clients broadcast their presence over multicast, this allows for peers to automatically discover one another.
 
-2. **Messaging (TCP)**: Once peers are discovered, messages are sent directly between users using TCP connections for reliable delivery.
+2. **Messaging:**: Once peers are discovered, messages are sent directly between users using TCP connections for reliable delivery.
 
+3. **Encryption:** When peers connect, they securely swap encryption keys with each user using Diffie-Hellman, ensuring secure communication from network monitoring tools.
 ## An important note:
-Many public networks have security measures in place to block devices from
-communicating with each other, as such behavior in public spaces such as a
-libraries or airports may be unpredictable
+Many public networks have security measures in place to block devices from communicating with each other, as such behavior in public spaces such as a libraries or airports may be unpredictable
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/akayy-dev/lanchat
 cd LANChat
 ```
 
